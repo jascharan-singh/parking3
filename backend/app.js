@@ -2,131 +2,47 @@ const express = require("express");
 require("dotenv").config();
 const mongoose = require("mongoose");
 const cors = require("cors");
+const jwt = require("jsonwebtoken"); // For JWT authentication
+const bcrypt = require("bcrypt"); // For secure password hashing
 const path = require("path");
-const Location = require("./models/Location"); // Ensure this path is correct
-const User = require("./models/User"); // Import User model once
+const Location = require("./models/Location");
+const User = require("./models/User");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// MongoDB connection without deprecated options
+// Connect to MongoDB
 mongoose
-  .connect(process.env.DB_CONNECTION_STRING, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(process.env.DB_CONNECTION_STRING)
   .then(() => console.log("Connected to MongoDB successfully"))
   .catch((err) => {
     console.error("MongoDB connection error:", err);
     process.exit(1);
   });
 
-// Monitor MongoDB connection
-mongoose.connection.on("error", (err) => {
-  console.error("MongoDB connection error:", err);
-});
-
-mongoose.connection.on("disconnected", () => {
-  console.log("MongoDB disconnected");
-});
-
-// Use CORS
+// Use CORS and JSON parsing
 app.use(cors());
-
-// Middleware to parse JSON bodies with error handling
 app.use(express.json());
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
-    return res.status(400).send({ error: "Invalid JSON" });
+
+// JWT Middleware to verify token
+const authenticateJWT = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
   }
-  next();
-});
 
-// Serve frontend in production
-if (process.env.NODE_ENV === "production") {
-  const frontendPath = path.join(__dirname, "../frontend/dist");
-  app.use(express.static(frontendPath));
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: "Invalid token." });
+    }
 
-  // All unknown routes should be handed to React app
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(frontendPath, "index.html"));
+    req.user = user; // Attach user data to request object
+    next();
   });
-}
+};
 
-// POST endpoint for saving location
-app.post("/send-location", async (req, res) => {
-  try {
-    const { latitude, longitude } = req.body;
-
-    // Validate input
-    if (latitude == null || longitude == null) {
-      return res.status(400).json({
-        error: "Missing required fields",
-        received: req.body,
-      });
-    }
-
-    // Validate number types and ranges
-    if (!isFinite(latitude) || latitude < -90 || latitude > 90) {
-      return res.status(400).json({
-        error: "Invalid latitude value",
-        received: latitude,
-      });
-    }
-
-    if (!isFinite(longitude) || longitude < -180 || longitude > 180) {
-      return res.status(400).json({
-        error: "Invalid longitude value",
-        received: longitude,
-      });
-    }
-
-    // Create and save location
-    const newLocation = new Location({ latitude, longitude });
-    const savedLocation = await newLocation.save();
-
-    res.status(200).json({
-      message: "Location saved successfully",
-      location: savedLocation,
-    });
-  } catch (error) {
-    console.error("Server error:", error);
-    res.status(500).json({
-      error: "Server error",
-      message: error.message,
-    });
-  }
-});
-
-// GET endpoint to fetch locations
-app.get("/locations", async (req, res) => {
-  try {
-    const locations = await Location.find().sort("-createdAt").limit(10);
-    res.status(200).json(locations);
-  } catch (error) {
-    console.error("Error fetching locations:", error);
-    res.status(500).json({
-      error: "Error fetching locations",
-      message: error.message,
-    });
-  }
-});
-
-// GET endpoint to fetch all registered users
-app.get("/users", async (req, res) => {
-  try {
-    const users = await User.find({}, { password: 0 }); // Exclude passwords
-    res.status(200).json(users);
-  } catch (error) {
-    console.error("Error fetching users:", error);
-    res.status(500).json({
-      error: "Server error",
-      message: error.message,
-    });
-  }
-});
-
-// POST endpoint for registering a user
+// POST: User Registration
 app.post("/register", async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -137,117 +53,81 @@ app.post("/register", async (req, res) => {
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ error: "Email is already registered" });
+      return res.status(400).json({ error: "Email is already registered." });
     }
 
-    const newUser = new User({ username, email, password });
-    await newUser.save();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ username, email, password: hashedPassword });
 
-    res.status(201).json({
-      message: "User registered successfully",
-      user: {
-        id: newUser._id,
-        username: newUser.username,
-        email: newUser.email,
-      },
-    });
+    await newUser.save();
+    res.status(201).json({ message: "User registered successfully." });
   } catch (error) {
     console.error("Error during registration:", error);
     res.status(500).json({ error: "Server error", message: error.message });
   }
 });
 
-// POST endpoint for user login (secure method for handling sensitive data)
+// POST: User Login
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
+      return res.status(400).json({ error: "Email and password are required." });
     }
 
-    // Fetch user from database
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ error: "User not found." });
     }
 
-    // Compare passwords (if passwords are hashed, adjust accordingly)
-    const isPasswordValid = password === user.password; // Replace with bcrypt.compare if using hashed passwords
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      return res.status(401).json({ error: "Invalid email or password." });
     }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     res.status(200).json({
-      message: "Login successful",
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-      },
+      message: "Login successful.",
+      token,
+      user: { id: user._id, username: user.username, email: user.email },
     });
   } catch (error) {
     console.error("Error during login:", error);
+    res.status(500).json({ error: "Server error", message: error.message });
+  }
+});
+
+// GET: Fetch Locations (Secure Route)
+app.get("/locations", authenticateJWT, async (req, res) => {
+  try {
+    const locations = await Location.find().sort("-createdAt").limit(10);
+    res.status(200).json(locations);
+  } catch (error) {
+    console.error("Error fetching locations:", error);
     res.status(500).json({
-      error: "Server error",
+      error: "Error fetching locations.",
       message: error.message,
     });
   }
 });
 
-// GET endpoint for user login (less secure; only for testing or non-sensitive purposes)
-app.get("/login", async (req, res) => {
-    try {
-      const { email, password } = req.query; // Ensure these are passed as query strings
-      if (!email || !password) {
-        return res.status(400).json({ error: "Email and password are required" });
-      }
-  
-      // Fetch user from database
-      const user = await User.findOne({ email });
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-  
-      // Compare passwords
-      const isPasswordValid = await bcrypt.compare(password, user.password);
-      if (!isPasswordValid) {
-        return res.status(401).json({ error: "Invalid email or password" });
-      }
-  
-      res.status(200).json({
-        message: "Login successful",
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-        },
-      });
-    } catch (error) {
-      console.error("Error during login:", error);
-      res.status(500).json({
-        error: "Server error",
-        message: error.message,
-      });
-    }
+// Serve frontend in production
+if (process.env.NODE_ENV === "production") {
+  const frontendPath = path.join(__dirname, "../frontend/dist");
+  app.use(express.static(frontendPath));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(frontendPath, "index.html"));
   });
-// Start the server with error handling
-const server = app
-  .listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-  })
-  .on("error", (err) => {
-    console.error("Server failed to start:", err);
-  });
+}
 
-// Handle process termination
-process.on("SIGTERM", async () => {
-  try {
-    await mongoose.connection.close(false); // Use async close
-    console.log("Server closed. Database instance disconnected");
-    process.exit(0);
-  } catch (error) {
-    console.error("Error closing database connection:", error);
-    process.exit(1);
-  }
+// Start server
+app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
 });
