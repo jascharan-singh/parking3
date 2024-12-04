@@ -1,10 +1,13 @@
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import './App.css';
+import SignupPage from './SignupPage';
+import LoginPage from './LoginPage';
 
 // Replace with your actual Google Maps API key
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
-function App() {
+const LocationPage = () => {
   const [currentLocation, setCurrentLocation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -50,7 +53,6 @@ function App() {
     }
   };
 
-  // Get user's location
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -63,7 +65,6 @@ function App() {
           setCurrentLocation(location);
           setLoading(false);
 
-          // Send location to backend
           fetch('/send-location/', {
             method: 'POST',
             headers: {
@@ -90,7 +91,6 @@ function App() {
     }
   }, []);
 
-  // Update map when location changes
   useEffect(() => {
     if (currentLocation && mapInstance.current && markerRef.current) {
       const newPosition = { 
@@ -138,6 +138,25 @@ function App() {
         <div ref={mapRef} className="map"></div>
       </div>
     </div>
+  );
+};
+
+function App() {
+  return (
+    <Router>
+      <div>
+        <nav className="navbar">
+          <Link to="/" className="nav-link">Location</Link>
+          <Link to="/signup" className="nav-link">Signup</Link>
+          <Link to="/login" className="nav-link">Login</Link>
+        </nav>
+        <Routes>
+          <Route path="/" element={<LocationPage />} />
+          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/login" element={<LoginPage />} />
+        </Routes>
+      </div>
+    </Router>
   );
 }
 
